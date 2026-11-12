@@ -90,17 +90,40 @@ class Manager(ControlSurface):
         self.osc_server.add_handler("/live/api/show_message", show_message_callback)
 
         with self.component_guard():
+            #--------------------------------------------------------------------------------
+            # Discover handler classes from the package instead of listing them here.
+            #
+            # Live does not hot-reload manager.py, so a hardcoded list would only ever
+            # reflect the handlers present when Live started: a newly added handler
+            # module could never register without restarting Live. Discovering them at
+            # call time means a /live/api/reload is enough once this code is loaded.
+            #--------------------------------------------------------------------------------
+            handler_classes = []
+            for attribute_name in dir(abletonosc):
+                if not attribute_name.endswith("Handler"):
+                    continue
+                candidate = getattr(abletonosc, attribute_name)
+                if not isinstance(candidate, type):
+                    continue
+                if not issubclass(candidate, abletonosc.AbletonOSCHandler):
+                    continue
+                if candidate is abletonosc.AbletonOSCHandler:
+                    continue
+                handler_classes.append((attribute_name, candidate))
+
+            # Deterministic order, so handler registration is stable across reloads.
+            handler_classes.sort(key=lambda pair: pair[0])
+
+            # ApplicationHandler first: it emits the /live/startup announcement.
+            handler_classes.sort(key=lambda pair: pair[0] != "ApplicationHandler")
+
             self.handlers = [
-                abletonosc.SongHandler(self),
-                abletonosc.ApplicationHandler(self),
-                abletonosc.ClipHandler(self),
-                abletonosc.ClipSlotHandler(self),
-                abletonosc.TrackHandler(self),
-                abletonosc.DeviceHandler(self),
-                abletonosc.ViewHandler(self),
-                abletonosc.SceneHandler(self),
-                abletonosc.MidiMapHandler(self),
+                handler_class(self) for _, handler_class in handler_classes
             ]
+            logger.info(
+                "Registered handlers: %s"
+                % ", ".join(name for name, _ in handler_classes)
+            )
 
     def clear_api(self):
         self.osc_server.clear_handlers()
@@ -119,21 +142,34 @@ class Manager(ControlSurface):
         self.schedule_message(1, self.tick)
 
     def reload_imports(self):
+        #--------------------------------------------------------------------------------
+        # Reload the package first: its __init__ imports every handler submodule, so a
+        # handler module added since Live started becomes importable from here.
+        #--------------------------------------------------------------------------------
         try:
-            importlib.reload(abletonosc.application)
-            importlib.reload(abletonosc.clip)
-            importlib.reload(abletonosc.clip_slot)
-            importlib.reload(abletonosc.device)
-            importlib.reload(abletonosc.handler)
-            importlib.reload(abletonosc.osc_server)
-            importlib.reload(abletonosc.scene)
-            importlib.reload(abletonosc.song)
-            importlib.reload(abletonosc.track)
-            importlib.reload(abletonosc.view)
             importlib.reload(abletonosc)
-        except Exception as e:
-            exc = traceback.format_exc()
-            logging.warning(exc)
+        except Exception:
+            logging.warning(traceback.format_exc())
+
+        #--------------------------------------------------------------------------------
+        # Reload each submodule independently. A failure in one module must not abort
+        # the rest, otherwise a single bad handler would leave every handler stale.
+        #--------------------------------------------------------------------------------
+        for module_name in (
+            "application", "browser", "clip", "clip_slot", "device", "handler",
+            "osc_server", "scene", "song", "track", "view",
+        ):
+            module = getattr(abletonosc, module_name, None)
+            if module is None:
+                try:
+                    module = importlib.import_module(".%s" % module_name, "abletonosc")
+                except Exception:
+                    logging.warning(traceback.format_exc())
+                    continue
+            try:
+                importlib.reload(module)
+            except Exception:
+                logging.warning(traceback.format_exc())
 
         self.clear_api()
         self.init_api()
