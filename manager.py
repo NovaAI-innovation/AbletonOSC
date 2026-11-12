@@ -92,38 +92,31 @@ class Manager(ControlSurface):
 
         with self.component_guard():
             #--------------------------------------------------------------------------------
-            # Discover handler classes from the package instead of listing them here.
+            # Handlers are resolved through the package namespace at call time, so a
+            # /live/api/reload (which re-executes abletonosc/__init__.py) picks up a handler
+            # module newly imported there without restarting Live.
             #
-            # Live does not hot-reload manager.py, so a hardcoded list would only ever
-            # reflect the handlers present when Live started: a newly added handler
-            # module could never register without restarting Live. Discovering them at
-            # call time means a /live/api/reload is enough once this code is loaded.
+            # An explicit list is used rather than scanning dir(abletonosc). A scan has to
+            # decide which attributes are handler classes, and every such check either
+            # depends on class identity -- which reload breaks, because reloading a module
+            # replaces its class objects -- or risks instantiating something unintended.
+            # The list is small and changes only when a handler module is added.
             #--------------------------------------------------------------------------------
-            handler_classes = []
-            for attribute_name in dir(abletonosc):
-                if not attribute_name.endswith("Handler"):
-                    continue
-                candidate = getattr(abletonosc, attribute_name)
-                if not isinstance(candidate, type):
-                    continue
-                if not issubclass(candidate, abletonosc.AbletonOSCHandler):
-                    continue
-                if candidate is abletonosc.AbletonOSCHandler:
-                    continue
-                handler_classes.append((attribute_name, candidate))
-
-            # Deterministic order, so handler registration is stable across reloads.
-            handler_classes.sort(key=lambda pair: pair[0])
-
-            # ApplicationHandler first: it emits the /live/startup announcement.
-            handler_classes.sort(key=lambda pair: pair[0] != "ApplicationHandler")
-
             self.handlers = [
-                handler_class(self) for _, handler_class in handler_classes
+                abletonosc.ApplicationHandler(self),
+                abletonosc.BrowserHandler(self),
+                abletonosc.ClipHandler(self),
+                abletonosc.ClipSlotHandler(self),
+                abletonosc.DeviceHandler(self),
+                abletonosc.MidiMapHandler(self),
+                abletonosc.SceneHandler(self),
+                abletonosc.SongHandler(self),
+                abletonosc.TrackHandler(self),
+                abletonosc.ViewHandler(self),
             ]
             logger.info(
                 "Registered handlers: %s"
-                % ", ".join(name for name, _ in handler_classes)
+                % ", ".join(type(handler).__name__ for handler in self.handlers)
             )
 
     def clear_api(self):
@@ -144,21 +137,14 @@ class Manager(ControlSurface):
 
     def reload_imports(self):
         #--------------------------------------------------------------------------------
-        # Reload the package first: its __init__ imports every handler submodule, so a
-        # handler module added since Live started becomes importable from here.
-        #--------------------------------------------------------------------------------
-        try:
-            importlib.reload(abletonosc)
-        except Exception:
-            logging.warning(traceback.format_exc())
-
-        #--------------------------------------------------------------------------------
-        # Reload each submodule independently. A failure in one module must not abort
-        # the rest, otherwise a single bad handler would leave every handler stale.
+        # Reload each submodule independently: one failure must not abort the rest and
+        # leave every handler stale. The package __init__ is reloaded last so its
+        # namespace ends up bound to the newest class objects.
         #--------------------------------------------------------------------------------
         for module_name in (
-            "application", "browser", "clip", "clip_slot", "device", "handler",
-            "osc_server", "scene", "song", "track", "view",
+            "application", "browser", "clip", "clip_slot", "constants", "device",
+            "handler", "introspection", "midimap", "osc_server", "scene", "song",
+            "track", "view",
         ):
             module = getattr(abletonosc, module_name, None)
             if module is None:
@@ -171,6 +157,11 @@ class Manager(ControlSurface):
                 importlib.reload(module)
             except Exception:
                 logging.warning(traceback.format_exc())
+
+        try:
+            importlib.reload(abletonosc)
+        except Exception:
+            logging.warning(traceback.format_exc())
 
         self.clear_api()
         self.init_api()
