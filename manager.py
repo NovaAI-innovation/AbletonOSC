@@ -68,6 +68,7 @@ class Manager(ControlSurface):
         logger.removeHandler(self.live_osc_error_handler)
 
     def init_api(self):
+        logger.info("AbletonOSC init_api running from %s" % __file__)
         def test_callback(params):
             self.show_message("Received OSC OK")
             self.osc_server.send("/live/test", ("ok",))
