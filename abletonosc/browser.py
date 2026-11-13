@@ -8,8 +8,8 @@ from .handler import AbletonOSCHandler
 # The Browser API lives in Live.Browser and is not covered by the official
 # Cycling 74 LOM documentation. It is reached via the Application object.
 #
-# This handler is intentionally read-only: it lets a client discover what the
-# browser contains before anything is loaded onto a track.
+# Discovery (get/*) is read-only. Loading (load_item) is the single write
+# operation: it loads one browser item onto a chosen track.
 #--------------------------------------------------------------------------------
 
 # Categories exposed by the Browser object. Each maps to either a single
@@ -148,3 +148,60 @@ class BrowserHandler(AbletonOSCHandler):
                 raise ValueError("Path not found in category %s" % category)
             return _item_flags(item) + (str(item.uri), str(getattr(item, "source", "")))
         self.osc_server.add_handler("/live/browser/get/item", get_item)
+
+        def load_item(params: Tuple[Any, ...]) -> Tuple:
+            """
+            Load a browser item onto a track.
+
+            /live/browser/load_item <track_index> <category> [path...]
+
+            Live's Browser.load_item loads onto the *selected* track, so the target
+            track is selected first. Returns the track index, the resolved item name
+            and the item URI so a caller can confirm what actually landed.
+            """
+            if len(params) < 2:
+                raise ValueError(
+                    "load_item requires a track index and a category argument"
+                )
+            track_index = int(params[0])
+            category = str(params[1])
+            path = tuple(str(p) for p in params[2:])
+
+            tracks = list(self.song.tracks)
+            if track_index < 0 or track_index >= len(tracks):
+                raise ValueError("Track index out of range: %d" % track_index)
+
+            root = self._resolve_category(category)
+            if root is None:
+                raise ValueError("Unknown browser category: %s" % category)
+            if isinstance(root, list):
+                if not path:
+                    raise ValueError(
+                        "Category %s is a list; supply an index" % category
+                    )
+                try:
+                    root = root[int(path[0])]
+                except (ValueError, IndexError):
+                    raise ValueError(
+                        "Invalid index %r for category %s" % (path[0], category)
+                    )
+                path = path[1:]
+
+            item = self._walk(root, path)
+            if item is None:
+                raise ValueError(
+                    "Path not found in category %s: %s" % (category, path)
+                )
+            if not item.is_loadable:
+                raise ValueError(
+                    "Browser item %r is not loadable (is_folder=%s)"
+                    % (item.name, item.is_folder)
+                )
+
+            # Live loads onto the selected track.
+            track = tracks[track_index]
+            self.song.view.selected_track = track
+            self._get_browser().load_item(item)
+
+            return (track_index, str(item.name), str(item.uri))
+        self.osc_server.add_handler("/live/browser/load_item", load_item)
