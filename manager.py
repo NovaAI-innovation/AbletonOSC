@@ -68,6 +68,7 @@ class Manager(ControlSurface):
         logger.removeHandler(self.live_osc_error_handler)
 
     def init_api(self):
+        logger.info("AbletonOSC init_api running from %s" % __file__)
         def test_callback(params):
             self.show_message("Received OSC OK")
             self.osc_server.send("/live/test", ("ok",))
@@ -90,17 +91,33 @@ class Manager(ControlSurface):
         self.osc_server.add_handler("/live/api/show_message", show_message_callback)
 
         with self.component_guard():
+            #--------------------------------------------------------------------------------
+            # Handlers are resolved through the package namespace at call time, so a
+            # /live/api/reload (which re-executes abletonosc/__init__.py) picks up a handler
+            # module newly imported there without restarting Live.
+            #
+            # An explicit list is used rather than scanning dir(abletonosc). A scan has to
+            # decide which attributes are handler classes, and every such check either
+            # depends on class identity -- which reload breaks, because reloading a module
+            # replaces its class objects -- or risks instantiating something unintended.
+            # The list is small and changes only when a handler module is added.
+            #--------------------------------------------------------------------------------
             self.handlers = [
-                abletonosc.SongHandler(self),
                 abletonosc.ApplicationHandler(self),
+                abletonosc.BrowserHandler(self),
                 abletonosc.ClipHandler(self),
                 abletonosc.ClipSlotHandler(self),
-                abletonosc.TrackHandler(self),
                 abletonosc.DeviceHandler(self),
-                abletonosc.ViewHandler(self),
-                abletonosc.SceneHandler(self),
                 abletonosc.MidiMapHandler(self),
+                abletonosc.SceneHandler(self),
+                abletonosc.SongHandler(self),
+                abletonosc.TrackHandler(self),
+                abletonosc.ViewHandler(self),
             ]
+            logger.info(
+                "Registered handlers: %s"
+                % ", ".join(type(handler).__name__ for handler in self.handlers)
+            )
 
     def clear_api(self):
         self.osc_server.clear_handlers()
@@ -119,21 +136,32 @@ class Manager(ControlSurface):
         self.schedule_message(1, self.tick)
 
     def reload_imports(self):
+        #--------------------------------------------------------------------------------
+        # Reload each submodule independently: one failure must not abort the rest and
+        # leave every handler stale. The package __init__ is reloaded last so its
+        # namespace ends up bound to the newest class objects.
+        #--------------------------------------------------------------------------------
+        for module_name in (
+            "application", "browser", "clip", "clip_slot", "constants", "device",
+            "handler", "introspection", "midimap", "osc_server", "scene", "song",
+            "track", "view",
+        ):
+            module = getattr(abletonosc, module_name, None)
+            if module is None:
+                try:
+                    module = importlib.import_module(".%s" % module_name, "abletonosc")
+                except Exception:
+                    logging.warning(traceback.format_exc())
+                    continue
+            try:
+                importlib.reload(module)
+            except Exception:
+                logging.warning(traceback.format_exc())
+
         try:
-            importlib.reload(abletonosc.application)
-            importlib.reload(abletonosc.clip)
-            importlib.reload(abletonosc.clip_slot)
-            importlib.reload(abletonosc.device)
-            importlib.reload(abletonosc.handler)
-            importlib.reload(abletonosc.osc_server)
-            importlib.reload(abletonosc.scene)
-            importlib.reload(abletonosc.song)
-            importlib.reload(abletonosc.track)
-            importlib.reload(abletonosc.view)
             importlib.reload(abletonosc)
-        except Exception as e:
-            exc = traceback.format_exc()
-            logging.warning(exc)
+        except Exception:
+            logging.warning(traceback.format_exc())
 
         self.clear_api()
         self.init_api()

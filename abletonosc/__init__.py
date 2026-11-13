@@ -3,8 +3,10 @@ logger = logging.getLogger("abletonosc")
 
 logger.info("Reloading abletonosc...")
 
+from .handler import AbletonOSCHandler
 from .osc_server import OSCServer
 from .application import ApplicationHandler
+from .browser import BrowserHandler
 from .song import SongHandler
 from .clip import ClipHandler
 from .clip_slot import ClipSlotHandler
